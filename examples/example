@@ -1,0 +1,11 @@
+
+inductive nat := O | S n : nat;
+
+plus := \x -> \y ->
+	match x with
+		nat::O => y
+		| nat::S xx => plus xx (nat::S y)
+	end;
+
+infer nat;
+

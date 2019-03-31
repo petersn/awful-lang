@@ -1,0 +1,115 @@
+// Grammar
+
+use std::str::FromStr;
+use crate::ast;
+
+grammar;
+
+pub CodeBlock: ast::CodeBlock = {
+	=> ast::CodeBlock{declarations: vec!{}},
+	<decl: Declaration> <rest: CodeBlock> =>
+		ast::CodeBlock{declarations: ast::concat_vecs(vec!{decl}, rest.declarations)},
+}
+
+pub Declaration: ast::Declaration = {
+	<binder: Binder> ":=" <expr: Expr> ";" =>
+		ast::Declaration::LetDeclaration(binder, expr),
+	"inductive" <name: Var> ":=" <constructors: ConstructorList> ";" =>
+		ast::Declaration::InductiveDeclaration(name, constructors),
+	"infer" <expr: Expr> ";" =>
+		ast::Declaration::TypeInference(expr),
+}
+
+pub Expr = ExprL0;
+
+pub ExprL0: ast::Expr = {
+	<e: ExprL1> => e,
+}
+
+pub ExprL1: ast::Expr = {
+	<e: ExprL2> => e,
+	r"\\" <binder: Binder> "->" <e: ExprL1> =>
+		ast::Expr::Abs(
+			binder, Box::new(e),
+		),
+	"match" <e: Expr> "with" <clauses: MatchClauses> "end" =>
+		ast::Expr::Match(
+			Box::new(e), clauses,
+		),
+	"let" <binder: Binder> ":=" <e1: Expr> "in" <e2: Expr> =>
+		ast::Expr::LetIn(
+			binder, Box::new(e1), Box::new(e2),
+		),
+}
+
+pub ExprL2: ast::Expr = {
+	<e: ExprL3> => e,
+	<fn_expr: ExprL2> <arg_expr: ExprL3> =>
+		ast::Expr::App(Box::new(fn_expr), Box::new(arg_expr)),
+}
+
+pub ExprL3: ast::Expr = {
+	<name: Var> => ast::Expr::Var(name),
+	<value: Num> => ast::Expr::Number(value),
+//	<fn_expr: ExprL3> "(" <args_list: ArgsList> ")" =>
+	"(" <e: Expr> ")" => e,
+}
+
+pub TypeArgsList: ast::TypeArgsList = {
+	=> ast::TypeArgsList{args: vec!{}},
+	<ty: TypeExpr> => ast::TypeArgsList{args: vec!{ty}},
+	// FIXME: The usage of concat_vecs here result in quadratic time parsing.
+	<ty: TypeExpr> "," <rest: TypeArgsList> =>
+		ast::TypeArgsList{args: ast::concat_vecs(vec!{ty}, rest.args)},
+}
+
+pub BinderList: ast::BinderList = {
+	=> ast::BinderList{binders: vec!{}},
+	<b: Binder> => ast::BinderList{binders: vec!{b}},
+	<b: Binder> "," <rest: BinderList> =>
+		ast::BinderList{binders: ast::concat_vecs(vec!{b}, rest.binders)},
+}
+
+pub Binder: ast::Binder = {
+	<name: Var> => ast::Binder{name: name, type_annot: Option::None},
+	<name: Var> ":" <ty: TypeExpr> => ast::Binder{name: name, type_annot: Option::Some(ty)},
+}
+
+// TODO: Use that special LALRPOP feature to deduplicate this with BinderList.
+
+pub ConstructorList: ast::ConstructorList = {
+	=> ast::ConstructorList{constructors: vec!{}},
+	<c: Constructor> => ast::ConstructorList{constructors: vec!{c}},
+	<c: Constructor> "|" <rest: ConstructorList> =>
+		ast::ConstructorList{constructors: ast::concat_vecs(vec!{c}, rest.constructors)},
+}
+
+pub Constructor: ast::Constructor = {
+	<name: Var> <binders: BinderList> => ast::Constructor{name: name, binders: binders},
+}
+
+pub MatchClauses: Vec<ast::MatchClause> = {
+	=> vec!{},
+	<mc: MatchClause> => vec!{mc},
+	<mc: MatchClause> "|" <rest: MatchClauses> => ast::concat_vecs(vec!{mc}, rest),
+}
+
+pub MatchClause: ast::MatchClause = {
+	<constructor_name: Var> <binders: BinderList> "=>" <result: Expr> =>
+		ast::MatchClause{constructor_name: constructor_name, binders: binders, result: result},
+}
+
+pub TypeExpr: ast::TypeExpr = {
+	<name: Var> => ast::TypeExpr::Var(name),
+	<name: Var> "<" <args: TypeArgsList> ">" => ast::TypeExpr::App(name, args),
+}
+
+pub Var: String = {
+	<s: r"[a-zA-Z_][a-zA-Z_0-9]*"> => s.to_string(),
+	<s: r"[a-zA-Z_][a-zA-Z_0-9]*::[a-zA-Z_][a-zA-Z_0-9]*"> => s.to_string(),
+}
+
+pub Num: i64 = {
+	<s: r"[0-9]+"> => i64::from_str(s).unwrap(),
+}
+
