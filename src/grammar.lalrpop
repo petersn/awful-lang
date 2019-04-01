@@ -95,8 +95,8 @@ pub MatchClauses: Vec<ast::MatchClause> = {
 }
 
 pub MatchClause: ast::MatchClause = {
-	<constructor_name: Var> <binders: BinderList> "=>" <result: Expr> =>
-		ast::MatchClause{constructor_name: constructor_name, binders: binders, result: result},
+	<qualified_name: Var> <binders: BinderList> "=>" <result: Expr> =>
+		ast::MatchClause{qualified_name: qualified_name, binders: binders, result: result},
 }
 
 pub TypeExpr: ast::TypeExpr = {

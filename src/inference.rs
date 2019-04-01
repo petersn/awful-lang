@@ -115,7 +115,10 @@ impl UnificationContext {
 		}
 
 		match (self.union_concrete_app.get(&t1), self.union_concrete_app.get(&t2)) {
-			(Some(ast::TypeExpr::App(app1_name, app1_args)), Some(ast::TypeExpr::App(app2_name, app2_args))) => {
+			(
+				Some(ast::TypeExpr::App(app1_name, app1_args)),
+				Some(ast::TypeExpr::App(app2_name, app2_args)),
+			) => {
 				if app1_name != app2_name {
 					return Err("Unification error".to_owned());
 				}
@@ -206,6 +209,13 @@ impl Gamma {
 		assert!(match decl { ast::Declaration::InductiveDeclaration(_, _) => true, _ => false });
 		self.inductives.insert(name.clone(), decl.clone());
 	}
+
+	pub fn lookup_inductive(&self, name: &String) -> Result<&ast::Declaration, String> {
+		match self.inductives.get(name) {
+			Some(x) => Ok(x),
+			None => Err("Undefined inductive: ".to_owned() + name),
+		}
+	}
 }
 
 // FIXME: Horrific time complexity.
@@ -221,57 +231,6 @@ pub fn free_type_variables(t: &ast::TypeExpr) -> HashSet<String> {
 				}
 			}
 		}
-	};
-	result
-}
-
-// FIXME: Horrific time complexity.
-pub fn free_variables(t: &ast::Expr) -> HashSet<String> {
-	let mut result = HashSet::<String>::new();
-	match t {
-		ast::Expr::Var(name) => { result.insert(name.clone()); }
-		ast::Expr::Number(_) => (),
-		ast::Expr::Abs(binder, e) => {
-			let mut sub_vars = free_variables(&e);
-			sub_vars.remove(&binder.name);
-			for v in sub_vars {
-				result.insert(v);
-			}
-		}
-		ast::Expr::App(e1, e2) => {
-			for e in &[&e1, &e2] {
-				for v in free_variables(e) {
-					result.insert(v);
-				}
-			}
-		}
-		ast::Expr::LetIn(binder, e1, e2) => {
-			for v in free_variables(e1) {
-				result.insert(v);
-			}
-			let mut sub_vars = free_variables(&e2);
-			sub_vars.remove(&binder.name);
-			for v in sub_vars {
-				result.insert(v);
-			}
-		}
-		ast::Expr::Match(matchee, clauses) => {
-			for v in free_variables(matchee) {
-				result.insert(v);
-			}
-			for clause in clauses {
-				let mut sub_vars = free_variables(&clause.result);
-				for binder in &clause.binders.binders {
-					sub_vars.remove(&binder.name);
-				}
-				for v in sub_vars {
-					result.insert(v);
-				}
-				// XXX: Do we include clause.constructor_name?
-			}
-		}
-//		// XXX: Later if inductive definitions can have dependencies then this might have to change.
-//		ast::Expr::ConstructorRef(_, _) => (),
 	};
 	result
 }
@@ -320,7 +279,7 @@ impl InferenceContext {
 
 	pub fn new_poly_type(&mut self) -> ast::PolyType {
 		ast::PolyType{
-			binders: HashSet::<_>::new(),
+			binders: HashSet::new(),
 			mono: self.new_type(),
 		}
 	}
@@ -348,12 +307,14 @@ impl InferenceContext {
 				let mut gamma_prime = gamma.clone();
 				let arg_type = self.new_type();
 				let arg_poly_type = ast::PolyType{
-					binders: HashSet::<_>::new(),
+					binders: HashSet::new(),
 					mono: arg_type.clone(),
 				};
 				gamma_prime.insert(&binder.name, arg_poly_type);
 				let result_type = self.infer(&gamma_prime, body)?;
-				Ok(ast::TypeExpr::App("fun".to_owned(), ast::TypeArgsList{args: vec!{arg_type, result_type}}))
+				Ok(ast::TypeExpr::App(
+					"fun".to_owned(), ast::TypeArgsList{args: vec!{arg_type, result_type}},
+				))
 			}
 			ast::Expr::App(e1, e2) => {
 				let fn_type = self.infer(gamma, e1)?;
@@ -361,7 +322,9 @@ impl InferenceContext {
 				let result_type = self.new_type();
 				self.unification_context.equate(
 					&fn_type,
-					&ast::TypeExpr::App("fun".to_owned(), ast::TypeArgsList{args: vec!{arg_type, result_type.clone()}}),
+					&ast::TypeExpr::App(
+						"fun".to_owned(), ast::TypeArgsList{args: vec!{arg_type, result_type.clone()}}
+					),
 				)?;
 				Ok(result_type)
 			}
@@ -376,194 +339,162 @@ impl InferenceContext {
 				self.infer(&gamma_prime, e2)
 			}
 			ast::Expr::Match(matchee, clauses) => {
-				// FIXME: All of this is horrifically broken.
+				// First we infer a type for the matchee.
+				let matchee_type = self.infer(&gamma, &matchee)?;
+
+				// If we have no clauses then the matchee must be logically false.
 				if clauses.is_empty() {
-					return Ok(ast::TypeExpr::App("False".to_owned(), ast::TypeArgsList{args: vec!{}}));
+					let false_type = ast::TypeExpr::Var("False".to_owned());
+					self.unification_context.equate(&matchee_type, &false_type)?;
+					return Ok(false_type);
 				}
+
 				// Make up a new type.
 				let result_type = self.new_type();
+				let mut constructors_not_yet_covered: Option<HashSet<String>> = None;
+
 				// Infer types for all of the clauses.
 				for clause in clauses {
-					// Define a context with the arguments of the constructor bound.
-					let mut gamma_prime = gamma.clone();
-					for binder in &clause.binders.binders {
-						gamma_prime.insert(&binder.name, self.new_poly_type());
+					// Get the inductive.
+					let name_parts = clause.qualified_name.split("::").collect::<Vec<_>>();
+					assert!(name_parts.len() == 2);
+					let inductive_declaration = gamma.lookup_inductive(&name_parts[0].to_owned())?;
+
+					match inductive_declaration {
+						ast::Declaration::InductiveDeclaration(inductive_name, constructor_list) => {
+							// If this is our first clause then fill in the constructors not yet covered.
+							if constructors_not_yet_covered.is_none() {
+								constructors_not_yet_covered = Some(
+									constructor_list.constructors.iter().map(|c| c.name.clone()).collect(),
+								);
+							}
+							// ... now remove the constructor we just covered.
+							match &mut constructors_not_yet_covered {
+								Some(set) => {
+									if !set.contains(name_parts[1]) {
+										return Err("Constructor used too many times in match clause: ".to_owned() + name_parts[1]);
+									}
+									set.remove(name_parts[1]);
+								}
+								None => (),
+							}
+
+							// Unify the matchee with this type.
+							self.unification_context.equate(
+								&matchee_type,
+								&nulladic_app_type(inductive_name),
+							)?;
+
+							let mut gamma_prime = gamma.clone();
+							let constructor_definition: &ast::Constructor =
+								constructor_list.get_constructor(&name_parts[1].to_owned())?;
+							let pairs = clause.binders.binders.iter().zip(
+								constructor_definition.binders.binders.iter(),
+							);
+							for (local_binder, constructor_definition_binder) in pairs {
+								//println!("  BINDER: {:?}  FOO: {:?}", binder, foo);
+								// Ugh, why isn't this a reference appropriately?
+								let mine = constructor_definition_binder.clone();
+								gamma_prime.insert(
+									&local_binder.name,
+									ast::PolyType{
+										binders: HashSet::new(),
+										mono: mine.type_annot.unwrap().clone(),
+									},
+								);
+							}
+
+							let clause_type = self.infer(&gamma_prime, &clause.result)?;
+							self.unification_context.equate(&result_type, &clause_type)?;
+						}
+						_ => panic!("BUG BUG BUG!"),
 					}
-					let clause_type = self.infer(&gamma_prime, &clause.result)?;
-					self.unification_context.equate(&result_type, &clause_type)?;
+				}
+				// We must have consumed every constructor to be exhaustive.
+				match constructors_not_yet_covered {
+					Some(set) => {
+						if !set.is_empty() {
+							return Err(format!("Non-exhaustive match, missing: {:?}", set));
+						}
+					}
+					None => (),
 				}
 				Ok(result_type)
 			}
-//			ast::Expr::ConstructorRef(inductive_name, constructor_name) => {
-//				// Look up the constructor.
-//				Ok(self.new_type())
-//			}
 		}
 	}
 }
 
-pub struct Dependencies {
-	dependencies: HashMap<String, HashSet<String>>,
+pub fn nulladic_app_type(s: &str) -> ast::TypeExpr {
+	ast::TypeExpr::App(s.to_owned(), ast::TypeArgsList{args: vec!{}})
 }
 
-struct SCCState {
-	result: Vec<Vec<String>>,
-	index: HashMap<String, u64>,
-	low_link: HashMap<String, u64>,
-	on_stack: HashSet<String>,
-	stack: Vec<String>,
-	next_index: u64,
-}
-
-impl Dependencies {
-	pub fn new() -> Dependencies {
-		Dependencies{
-			dependencies: HashMap::new(),
-		}
-	}
-
-	// Make a depend on b.
-	pub fn add_dependency(&mut self, a: &String, b: &String) {
-		println!("Dep: {:?} -> {:?}", a, b);
-		match self.dependencies.get_mut(a) {
-			Some(dep_set) => { dep_set.insert(b.clone()); }
-			None => {
-				// TODO: Is there a better idiom here for a HashSet literal?
-				let mut hs = HashSet::<_>::new();
-				hs.insert(b.clone());
-				self.dependencies.insert(a.clone(), hs);
-			}
-		}
-	}
-
-	fn strong_connect(&self, state: &mut SCCState, node: &String) {
-		state.index.insert(node.clone(), state.next_index);
-		state.low_link.insert(node.clone(), state.next_index);
-		state.next_index += 1;
-		state.stack.push(node.clone());
-		state.on_stack.insert(node.clone());
-
-		if self.dependencies.contains_key(node) {
-			for dep in &self.dependencies[node] {
-				if !state.index.contains_key(dep) {
-					self.strong_connect(state, dep);
-				} else if state.on_stack.contains(dep) {
-					state.low_link.insert(node.clone(), std::cmp::min(state.low_link[node], state.index[dep]));
-				}
-			}
-		}
-
-		if state.low_link[node] == state.index[node] {
-			let mut scc = Vec::<String>::new();
-			loop {
-				let w = state.stack.pop().unwrap();
-				state.on_stack.remove(&w);
-				// Save the flag before we move w away.
-				let done_with_component = w == *node;
-				scc.push(w);
-				if done_with_component {
-					break;
-				}
-			}
-			state.result.push(scc);
-		}
-	}
-
-	pub fn strongly_connected_components(&self) -> Vec<Vec<String>> {
-		let mut state = SCCState{
-			result: Vec::new(),
-			index: HashMap::new(),
-			low_link: HashMap::new(),
-			on_stack: HashSet::new(),
-			stack: Vec::new(),
-			next_index: 0,
-		};
-
-		for node in self.dependencies.keys() {
-			if !state.index.contains_key(node) {
-				self.strong_connect(&mut state, node);
-			}
-		}
-
-		state.result
-	}
+fn extract_sole_mono(t: &ast::PolyType) -> ast::TypeExpr {
+	assert!(t.binders.is_empty());
+	return t.mono.clone();
 }
 
 pub fn update_via_inference(ctx: &mut InferenceContext, gamma: &mut Gamma, block: &mut ast::CodeBlock) {
-	let mut dependencies = Dependencies::new();
-	let mut name_provided_by: HashMap<String, &ast::Declaration> = HashMap::new();
-
-	// Determine what ast::Declarations provide which names, and what the dependencies are.
+	// Add type annotations that we can know about.
 	for declaration in &block.declarations {
 		match declaration {
 			ast::Declaration::LetDeclaration(binder, e) => {
-				for v in free_variables(e) {
-					dependencies.add_dependency(&binder.name, &v);
-				}
-				name_provided_by.insert(binder.name.clone(), &declaration);
+				gamma.insert(&binder.name, ctx.new_poly_type());
 			}
 			ast::Declaration::InductiveDeclaration(name, constructor_list) => {
-				// XXX: I'm not entirely sure what to do here.
-				name_provided_by.insert(name.clone(), &declaration);
+				gamma.insert_inductive(name, declaration);
+				// The inductive itself has type Type.
+				gamma.insert(
+					name,
+					ast::PolyType{
+						binders: HashSet::new(),
+						mono: nulladic_app_type("Type"),
+					},
+				);
 				for constructor in &constructor_list.constructors {
+					let mut constructor_type = nulladic_app_type(name);
+					for binder in constructor.binders.binders.iter().rev() {
+						let binder: &ast::Binder = binder;
+						match &binder.type_annot {
+							Some(constructor_argument_type) => {
+								constructor_type = ast::TypeExpr::App(
+									"fun".to_owned(),
+									ast::TypeArgsList{
+										args: vec!{
+											constructor_argument_type.clone(),
+											constructor_type,
+										},
+									},
+								);
+							}
+							None => panic!("All inductive constructor arguments must have explicit types!"),
+						}
+					}
 					let qualified_name = format!("{}::{}", name, constructor.name);
-					name_provided_by.insert(qualified_name, &declaration);
+					gamma.insert(
+						&qualified_name,
+						ast::PolyType{
+							binders: HashSet::new(),
+							mono: constructor_type,
+						},
+					);
 				}
 			}
-			ast::Declaration::TypeInference(expr) => (),
+			ast::Declaration::TypeInference(_) => (),
 		}
 	}
 
-	let scc = dependencies.strongly_connected_components();
-	println!("SCC: {:?}", scc);
-	println!("Name provided by: {:?}", name_provided_by.keys());
-
-	// FIXME: Add every other declaration that isn't in a component in scc at the end.
-
-	// Perform inference for each connected component individually.
-	for component in &scc {
-		let mut name_types = HashMap::<String, ast::TypeExpr>::new();
-		// Invent a fresh monotype for each name declared in this block.
-		for name in component {
-			let new_mono = ctx.new_type();
-			name_types.insert(name.clone(), new_mono.clone());
-			gamma.insert(
-				name,
-				ast::PolyType{
-					binders: HashSet::<_>::new(),
-					mono: new_mono.clone(),
-				},
-			);
-		}
-		// Infer each component in the block.
-		for name in component {
-			// Skip the names that no one provides, because they're currently inductives, or errors to be caught elsewhere.
-			if !name_provided_by.contains_key(name) {
-				continue;
+	// Propagate everything we know.
+	for declaration in &block.declarations {
+		match declaration {
+			ast::Declaration::LetDeclaration(binder, expr) => {
+				let t = ctx.infer(gamma, expr).unwrap();
+				let st = ctx.unification_context.most_specific_type(&t);
+				// FIXME: Check the type annotation in binder against our inferred type.
+				let decl_type = extract_sole_mono(gamma.lookup(&binder.name).unwrap());
+				ctx.unification_context.equate(&decl_type, &st).unwrap();
 			}
-			let declaration: &ast::Declaration = name_provided_by[name];
-			match declaration {
-				ast::Declaration::LetDeclaration(binder, expr) => {
-					let t = ctx.infer(gamma, expr).unwrap();
-					let st = ctx.unification_context.most_specific_type(&t);
-//					println!("BODY: {:?} : {:?}", expr, st);
-					// FIXME: Check the type annotation in binder against our inferred type.
-				}
-				ast::Declaration::InductiveDeclaration(name, constructor_list) => {
-					// XXX: Later I might need to do real inference here?
-
-//					println!("TYPE NAMES: {:?} {}", name_types, name);
-
-					// Mark the inductive itself as being of type Type.
-					ctx.unification_context.equate(
-						&name_types[name],
-						&ast::TypeExpr::App("Type".to_owned(), ast::TypeArgsList{args: vec!{}}),
-					).unwrap();
-
-					//
-				}
-				ast::Declaration::TypeInference(expr) => (),
-			}
+			_ => (),
 		}
 	}
 

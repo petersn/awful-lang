@@ -77,9 +77,24 @@ pub struct Constructor {
 
 #[derive(Clone)]
 pub struct MatchClause {
-	pub constructor_name: String,
+	pub qualified_name: String,
 	pub binders: BinderList,
 	pub result: Expr,
+}
+
+// =================
+// Define operations
+// =================
+
+impl ConstructorList {
+	pub fn get_constructor(&self, name: &String) -> Result<&Constructor, String> {
+		for constructor in &self.constructors {
+			if constructor.name == *name {
+				return Ok(constructor);
+			}
+		}
+		Err("Couldn't find constructor: ".to_owned() + name)
+	}
 }
 
 // =================
@@ -124,10 +139,10 @@ impl Debug for Expr {
 						write!(fmt, " |")?;
 					}
 				}
-				write!(fmt, "end")
+				write!(fmt, " end")
 			}
-//			ConstructorRef(inductive_name, constructor_name) =>
-//				write!(fmt, "{}::{}", inductive_name, constructor_name),
+//			ConstructorRef(inductive_name, qualified_name) =>
+//				write!(fmt, "{}::{}", inductive_name, qualified_name),
 		}
 	}
 }
@@ -137,7 +152,13 @@ impl Debug for TypeExpr {
 		use self::TypeExpr::*;
 		match self {
 			Var(name) => write!(fmt, "?{}", name),
-			App(name, type_args) => write!(fmt, "{}<{:?}>", name, type_args),
+			App(name, type_args) => {
+				if type_args.args.is_empty() {
+					write!(fmt, "{}", name)
+				} else {
+					write!(fmt, "{}<{:?}>", name, type_args)
+				}
+			}
 		}
 	}
 }
@@ -213,7 +234,7 @@ impl Debug for Constructor {
 
 impl Debug for MatchClause {
 	fn fmt(&self, fmt: &mut Formatter) -> Result<(), Error> {
-		write!(fmt, "{}{:?} => {:?}", self.constructor_name, self.binders, self.result)
+		write!(fmt, "{}{:?} => {:?}", self.qualified_name, self.binders, self.result)
 	}
 }
 

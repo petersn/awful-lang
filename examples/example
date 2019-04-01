@@ -1,5 +1,7 @@
 
-inductive nat := O | S n : nat;
+inductive nat := O | S n : nat<>;
+inductive Unit := u;
+inductive False := ;
 
 plus := \x -> \y ->
 	match x with
@@ -7,5 +9,22 @@ plus := \x -> \y ->
 		| nat::S xx => plus xx (nat::S y)
 	end;
 
+pred_with_default := \x -> \y ->
+	match x with
+		nat::S xx => xx
+		| nat::O => y
+	end;
+
+ill_formed := \x ->
+	match x with
+		nat::O => Unit::u
+		| nat::S => Unit::u
+	end;
+
 infer nat;
+infer nat::O;
+infer nat::S;
+infer plus;
+infer pred_with_default;
+infer ill_formed;
 
