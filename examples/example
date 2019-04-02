@@ -15,16 +15,13 @@ pred_with_default := \x -> \y ->
 		| nat::O => y
 	end;
 
-ill_formed := \x ->
-	match x with
-		nat::O => Unit::u
-		| nat::S => Unit::u
-	end;
+id := let _id := \x -> x in _id _id;
 
 infer nat;
 infer nat::O;
 infer nat::S;
 infer plus;
 infer pred_with_default;
-infer ill_formed;
+infer id;
+infer id id;
 

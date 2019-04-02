@@ -1,105 +1,28 @@
 // Inference.
 
-use std::hash::Hash;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use crate::ast;
-
-pub struct UnionFindNode<T> {
-	pub parent: u64,
-	pub rank: u64,
-	pub key: T,
-}
-
-pub struct UnionFind<T: Eq + Hash + Clone> {
-	nodes: Vec<UnionFindNode<T>>,
-	key_to_node_index: HashMap<T, u64>,
-}
-
-impl<T: Eq + Hash + Clone> UnionFind<T> {
-	pub fn new() -> UnionFind<T> {
-		UnionFind{
-			nodes: vec!{},
-			key_to_node_index: HashMap::new(),
-		}
-	}
-
-	fn ensure_node(&mut self, x: &T) -> u64 {
-		match self.key_to_node_index.get(&x) {
-			Some(i) => return *i,
-			_ => (),
-		}
-		if self.key_to_node_index.contains_key(&x) {
-			return self.key_to_node_index[&x];
-		}
-		let new_node_index = self.nodes.len() as u64;
-		self.key_to_node_index.insert(x.clone(), new_node_index);
-		self.nodes.push(UnionFindNode{
-			parent: new_node_index,
-			rank: 0,
-			key: x.clone(),
-		});
-		new_node_index
-	}
-
-	pub fn find(&mut self, x: &T) -> u64 {
-		let xi = self.ensure_node(x);
-		return self.find_by_index(xi);
-	}
-
-	fn find_by_index(&mut self, x: u64) -> u64 {
-		let xi = x as usize;
-		if self.nodes[xi].parent != x {
-			let parent_value = self.nodes[xi].parent;
-			self.nodes[xi].parent = self.find_by_index(parent_value);
-		}
-		self.nodes[xi].parent
-	}
-
-	pub fn canonicalize(&mut self, x: &T) -> T {
-		let xi = self.find(x);
-		return self.nodes[xi as usize].key.clone();
-	}
-
-	pub fn union(&mut self, x: &T, y: &T) {
-		let xi = self.ensure_node(x);
-		let yi = self.ensure_node(y);
-		self.union_by_index(xi, yi);
-	}
-
-	fn union_by_index(&mut self, x: u64, y: u64) {
-		let x_root_index = self.find_by_index(x);
-		let y_root_index = self.find_by_index(y);
-		let xi = x_root_index as usize;
-		let yi = y_root_index as usize;
-		if x_root_index == y_root_index {
-			return;
-		}
-		if self.nodes[xi].rank < self.nodes[yi].rank {
-			self.nodes[xi].parent = y_root_index;
-		} else {
-			self.nodes[yi].parent = x_root_index;
-			if self.nodes[xi].rank == self.nodes[yi].rank {
-				self.nodes[xi].rank += 1;
-			}
-		}
-	}
-}
+use crate::algorithms;
 
 pub struct UnificationContext {
-	unions: UnionFind<ast::TypeExpr>,
+	unions: algorithms::UnionFind<ast::TypeExpr>,
 	union_concrete_app: HashMap<ast::TypeExpr, ast::TypeExpr>,
 }
 
 impl UnificationContext {
 	pub fn new() -> UnificationContext {
 		UnificationContext{
-			unions: UnionFind::new(),
+			unions: algorithms::UnionFind::new(),
 			union_concrete_app: HashMap::new(),
 		}
 	}
 
 	pub fn equate(&mut self, t1: &ast::TypeExpr, t2: &ast::TypeExpr) -> Result<(), String> {
+		// FIXME: Apply some form of occurs check.
+		// Currently applying the equation a = foo<a> goes through successfully,
+		// but results in an infinite recursion in most_specific_type(a).
+
 //		println!("Equating: {:?} = {:?}", t1, t2);
 		let t1 = self.unions.canonicalize(&t1);
 		let t2 = self.unions.canonicalize(&t2);
@@ -109,7 +32,7 @@ impl UnificationContext {
 //		for (t_index, t) in vec!{(t1_index, t1), (t2_index, t2)} {
 		for t in &[&t1, &t2] {
 			match t {
-				ast::TypeExpr::Var(_) => (),
+				ast::TypeExpr::Var(_) => {}
 				ast::TypeExpr::App(_, _) => { self.union_concrete_app.insert((*t).clone(), (*t).clone()); }
 			}
 		}
@@ -131,7 +54,7 @@ impl UnificationContext {
 					self.equate(&a1, &a2)?;
 				}
 			}
-			_ => (),
+			_ => {}
 		}
 
 		for t in &[&t1, &t2] {
@@ -142,7 +65,7 @@ impl UnificationContext {
 						(*concretized_t).clone(),
 					);
 				}
-				None => (),
+				None => {}
 			}
 		}
 
@@ -154,13 +77,12 @@ impl UnificationContext {
 	}
 
 	pub fn most_specific_type(&mut self, t: &ast::TypeExpr) -> ast::TypeExpr {
-		let t_orig = t.clone();
 		let mut t = self.unions.canonicalize(t);
 		//t = self.unions.index_to_key(t_index).clone();
 //		println!("Most specific: {:?} -> {:?} with {:?}", t_orig, t, self.union_concrete_app);
 		match self.union_concrete_app.get(&t) {
 			Some(concrete_t) => { t = (*concrete_t).clone(); }
-			None => (),
+			None => {}
 		}
 		match t {
 			ast::TypeExpr::Var(_) => t,
@@ -204,6 +126,10 @@ impl Gamma {
 		self.context.insert(name.clone(), t);
 	}
 
+	pub fn remove(&mut self, name: &String) {
+		self.context.remove(name);
+	}
+
 	pub fn insert_inductive(&mut self, name: &String, decl: &ast::Declaration) {
 		assert!(!self.inductives.contains_key(name));
 		assert!(match decl { ast::Declaration::InductiveDeclaration(_, _) => true, _ => false });
@@ -231,6 +157,62 @@ pub fn free_type_variables(t: &ast::TypeExpr) -> HashSet<String> {
 				}
 			}
 		}
+	};
+	result
+}
+
+pub fn free_type_variables_poly_type(t: &ast::PolyType) -> HashSet<String> {
+	free_type_variables(&t.mono).difference(&t.binders).cloned().collect()
+}
+
+// FIXME: Horrific time complexity.
+pub fn free_variables(t: &ast::Expr) -> HashSet<String> {
+	let mut result = HashSet::<String>::new();
+	match t {
+		ast::Expr::Var(name) => { result.insert(name.clone()); }
+		ast::Expr::Number(_) => {}
+		ast::Expr::Abs(binder, e) => {
+			let mut sub_vars = free_variables(&e);
+			sub_vars.remove(&binder.name);
+			for v in sub_vars {
+				result.insert(v);
+			}
+		}
+		ast::Expr::App(e1, e2) => {
+			for e in &[&e1, &e2] {
+				for v in free_variables(e) {
+					result.insert(v);
+				}
+			}
+		}
+		ast::Expr::LetIn(binder, e1, e2) => {
+			for v in free_variables(e1) {
+				result.insert(v);
+			}
+			let mut sub_vars = free_variables(&e2);
+			sub_vars.remove(&binder.name);
+			for v in sub_vars {
+				result.insert(v);
+			}
+		}
+		ast::Expr::Match(matchee, clauses) => {
+			for v in free_variables(matchee) {
+				result.insert(v);
+			}
+			for clause in clauses {
+				let mut sub_vars = free_variables(&clause.result);
+				for binder in &clause.binders.binders {
+					sub_vars.remove(&binder.name);
+				}
+				for v in sub_vars {
+					result.insert(v);
+				}
+				result.insert(clause.qualified_name.clone());
+				// XXX: Do we include clause.constructor_name?
+			}
+		}
+//		// XXX: Later if inductive definitions can have dependencies then this might have to change.
+//		ast::Expr::ConstructorRef(_, _) => {}
 	};
 	result
 }
@@ -287,8 +269,8 @@ impl InferenceContext {
 	pub fn contextual_generalization(&self, gamma: &Gamma, t: &ast::TypeExpr) -> ast::PolyType {
 		let mut all_bound = HashSet::<String>::new();
 		for poly_t in gamma.context.values() {
-			for v in &poly_t.binders {
-				all_bound.insert(v.clone());
+			for tv in free_type_variables_poly_type(poly_t) {
+				all_bound.insert(tv);
 			}
 		}
 		ast::PolyType{
@@ -298,6 +280,7 @@ impl InferenceContext {
 	}
 
 	pub fn infer(&mut self, gamma: &Gamma, t: &ast::Expr) -> Result<ast::TypeExpr, String> {
+//		println!("   --: {:?}", t);
 		match t {
 			ast::Expr::Var(name) => Ok(self.instantiate(gamma.lookup(name)?)),
 			ast::Expr::Number(_) => Err("No inference on numbers yet.".to_owned()),
@@ -376,7 +359,7 @@ impl InferenceContext {
 									}
 									set.remove(name_parts[1]);
 								}
-								None => (),
+								None => {}
 							}
 
 							// Unify the matchee with this type.
@@ -417,7 +400,7 @@ impl InferenceContext {
 							return Err(format!("Non-exhaustive match, missing: {:?}", set));
 						}
 					}
-					None => (),
+					None => {}
 				}
 				Ok(result_type)
 			}
@@ -435,69 +418,142 @@ fn extract_sole_mono(t: &ast::PolyType) -> ast::TypeExpr {
 }
 
 pub fn update_via_inference(ctx: &mut InferenceContext, gamma: &mut Gamma, block: &mut ast::CodeBlock) {
-	// Add type annotations that we can know about.
+
+	// Compute a mapping from name -> declaration that provides that name.
+	let mut name_provided_by: HashMap<String, &ast::Declaration> = HashMap::new();
 	for declaration in &block.declarations {
 		match declaration {
-			ast::Declaration::LetDeclaration(binder, e) => {
-				gamma.insert(&binder.name, ctx.new_poly_type());
+			ast::Declaration::LetDeclaration(binder, _) => {
+				name_provided_by.insert(binder.name.clone(), &declaration);
 			}
 			ast::Declaration::InductiveDeclaration(name, constructor_list) => {
-				gamma.insert_inductive(name, declaration);
-				// The inductive itself has type Type.
-				gamma.insert(
-					name,
-					ast::PolyType{
-						binders: HashSet::new(),
-						mono: nulladic_app_type("Type"),
-					},
-				);
+				name_provided_by.insert(name.clone(), &declaration);
 				for constructor in &constructor_list.constructors {
-					let mut constructor_type = nulladic_app_type(name);
-					for binder in constructor.binders.binders.iter().rev() {
-						let binder: &ast::Binder = binder;
-						match &binder.type_annot {
-							Some(constructor_argument_type) => {
-								constructor_type = ast::TypeExpr::App(
-									"fun".to_owned(),
-									ast::TypeArgsList{
-										args: vec!{
-											constructor_argument_type.clone(),
-											constructor_type,
-										},
-									},
-								);
-							}
-							None => panic!("All inductive constructor arguments must have explicit types!"),
-						}
-					}
 					let qualified_name = format!("{}::{}", name, constructor.name);
-					gamma.insert(
-						&qualified_name,
-						ast::PolyType{
-							binders: HashSet::new(),
-							mono: constructor_type,
-						},
+					name_provided_by.insert(qualified_name, &declaration);
+				}
+			}
+			ast::Declaration::TypeInference(_) => {}
+		}
+	}
+
+	// Compute the inter-dependencies between the Declarations.
+	let mut dependencies = algorithms::Dependencies::<ast::Declaration>::new();
+	for declaration in &block.declarations {
+		match declaration {
+			ast::Declaration::LetDeclaration(_, e) => {
+				// FIXME: Later I also need to include free variables in the type annotation.
+//				println!("FV: {:?}   -> {:?}", declaration, free_variables(e));
+				for free_var in free_variables(e) {
+					dependencies.add_dependency(
+						declaration,
+						name_provided_by[&free_var],
 					);
 				}
 			}
-			ast::Declaration::TypeInference(_) => (),
-		}
-	}
-
-	// Propagate everything we know.
-	for declaration in &block.declarations {
-		match declaration {
-			ast::Declaration::LetDeclaration(binder, expr) => {
-				let t = ctx.infer(gamma, expr).unwrap();
-				let st = ctx.unification_context.most_specific_type(&t);
-				// FIXME: Check the type annotation in binder against our inferred type.
-				let decl_type = extract_sole_mono(gamma.lookup(&binder.name).unwrap());
-				ctx.unification_context.equate(&decl_type, &st).unwrap();
+			ast::Declaration::InductiveDeclaration(_name, _constructor_list) => {
+				// FIXME: XXX: I need to properly compute dependencies here!
+				// The binders in constructor_list.constructors[...].binders.binders can contain references to other types.
 			}
-			_ => (),
+			ast::Declaration::TypeInference(_) => {}
 		}
 	}
 
+	// Insert every Declaration that wasn't previously inserted.
+	for declaration in &block.declarations {
+		dependencies.add_vertex(declaration);
+	}
+
+	let scc = dependencies.strongly_connected_components();
+//	println!("SCC: {:?}", scc);
+
+	for component in &scc {
+		// Add type annotations that we can know about.
+		for declaration_tref in component {
+			let declaration = declaration_tref.contents;
+//			println!("PROCESSING: {:?}", declaration);
+			match declaration {
+				ast::Declaration::LetDeclaration(binder, _) => {
+					gamma.insert(&binder.name, ctx.new_poly_type());
+				}
+				ast::Declaration::InductiveDeclaration(name, constructor_list) => {
+					gamma.insert_inductive(name, declaration);
+					// The inductive itself has type Type.
+					gamma.insert(
+						name,
+						ast::PolyType{
+							binders: HashSet::new(),
+							mono: nulladic_app_type("Type"),
+						},
+					);
+					for constructor in &constructor_list.constructors {
+						let mut constructor_type = nulladic_app_type(name);
+						for binder in constructor.binders.binders.iter().rev() {
+							let binder: &ast::Binder = binder;
+							match &binder.type_annot {
+								Some(constructor_argument_type) => {
+									constructor_type = ast::TypeExpr::App(
+										"fun".to_owned(),
+										ast::TypeArgsList{
+											args: vec!{
+												constructor_argument_type.clone(),
+												constructor_type,
+											},
+										},
+									);
+								}
+								None => panic!("All inductive constructor arguments must have explicit types!"),
+							}
+						}
+						let qualified_name = format!("{}::{}", name, constructor.name);
+						gamma.insert(
+							&qualified_name,
+							ast::PolyType{
+								binders: HashSet::new(),
+								mono: constructor_type,
+							},
+						);
+					}
+				}
+				ast::Declaration::TypeInference(_) => {}
+			}
+		}
+
+		// Propagate everything we know.
+		for declaration_tref in component {
+			let declaration = declaration_tref.contents;
+			match declaration {
+				ast::Declaration::LetDeclaration(binder, expr) => {
+					let t = ctx.infer(gamma, expr).unwrap();
+					let st = ctx.unification_context.most_specific_type(&t);
+					// FIXME: Check the type annotation in binder against our inferred type.
+					let decl_type = extract_sole_mono(gamma.lookup(&binder.name).unwrap());
+					ctx.unification_context.equate(&decl_type, &st).unwrap();
+				}
+				_ => {}
+			}
+		}
+
+		// Generalize monotypes into polytypes, and update the context.
+		for declaration_tref in component {
+			let declaration = declaration_tref.contents;
+			match declaration {
+				ast::Declaration::LetDeclaration(binder, _) => {
+					let core_mono = gamma.lookup(&binder.name).unwrap().mono.clone();
+					// XXX: I don't like how fragile this is...
+					// I have to call most_specific_type here or the contextual generalization fails to work appropriately.
+					let core_mono = ctx.unification_context.most_specific_type(&core_mono);
+					let gen = ctx.contextual_generalization(gamma, &core_mono);
+//					println!("CORE MONO: {:?} -> {:?} -> {:?}", binder.name, core_mono, gen);
+					gamma.remove(&binder.name);
+					gamma.insert(&binder.name, gen);
+				}
+				_ => {}
+			}
+		}
+	}
+
+	// Process the commands.
 	for declaration in &block.declarations {
 		match declaration {
 			ast::Declaration::TypeInference(expr) => {
@@ -505,7 +561,7 @@ pub fn update_via_inference(ctx: &mut InferenceContext, gamma: &mut Gamma, block
 				let st = ctx.unification_context.most_specific_type(&t);
 				println!("Type inference: {:?} : {:?}", expr, st);
 			}
-			_ => (),
+			_ => {}
 		}
 	}
 }

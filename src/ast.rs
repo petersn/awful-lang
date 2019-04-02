@@ -163,6 +163,17 @@ impl Debug for TypeExpr {
 	}
 }
 
+impl Debug for PolyType {
+	fn fmt(&self, fmt: &mut Formatter) -> Result<(), Error> {
+		write!(fmt, "forall")?;
+		for binder in &self.binders {
+			write!(fmt, " {:?}", binder)?;
+		}
+		write!(fmt, ". {:?}", self.mono)
+	}
+}
+
+
 // TODO: Can I use a trait to reduce this duplication here?
 // It's currently pretty disgusting... :/
 
