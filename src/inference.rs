@@ -23,13 +23,13 @@ impl UnificationContext {
 		// Currently applying the equation a = foo<a> goes through successfully,
 		// but results in an infinite recursion in most_specific_type(a).
 
-//		println!("Equating: {:?} = {:?}", t1, t2);
+		//println!("Equating: {:?} = {:?}", t1, t2);
 		let t1 = self.unions.canonicalize(&t1);
 		let t2 = self.unions.canonicalize(&t2);
-//		println!("Canon:    {:?} = {:?}", t1, t2);
+		//println!("Canon:    {:?} = {:?}", t1, t2);
 
 		self.unions.union(&t1, &t2);
-//		for (t_index, t) in vec!{(t1_index, t1), (t2_index, t2)} {
+		//for (t_index, t) in vec!{(t1_index, t1), (t2_index, t2)} {
 		for t in &[&t1, &t2] {
 			match t {
 				ast::TypeExpr::Var(_) => {}
@@ -79,7 +79,7 @@ impl UnificationContext {
 	pub fn most_specific_type(&mut self, t: &ast::TypeExpr) -> ast::TypeExpr {
 		let mut t = self.unions.canonicalize(t);
 		//t = self.unions.index_to_key(t_index).clone();
-//		println!("Most specific: {:?} -> {:?} with {:?}", t_orig, t, self.union_concrete_app);
+		//println!("Most specific: {:?} -> {:?} with {:?}", t_orig, t, self.union_concrete_app);
 		match self.union_concrete_app.get(&t) {
 			Some(concrete_t) => { t = (*concrete_t).clone(); }
 			None => {}
@@ -211,15 +211,8 @@ pub fn free_variables(t: &ast::Expr) -> HashSet<String> {
 				// XXX: Do we include clause.constructor_name?
 			}
 		}
-//		// XXX: Later if inductive definitions can have dependencies then this might have to change.
-//		ast::Expr::ConstructorRef(_, _) => {}
 	};
 	result
-}
-
-pub struct InferenceContext {
-	unification_context: UnificationContext,
-	type_counter: u64,
 }
 
 fn apply_type_subs(subst: &HashMap<ast::TypeExpr, ast::TypeExpr>, t: &ast::TypeExpr) -> ast::TypeExpr {
@@ -236,6 +229,11 @@ fn apply_type_subs(subst: &HashMap<ast::TypeExpr, ast::TypeExpr>, t: &ast::TypeE
 			_ => t.clone(),
 		}
 	}
+}
+
+pub struct InferenceContext {
+	unification_context: UnificationContext,
+	type_counter: u64,
 }
 
 impl InferenceContext {
@@ -280,7 +278,7 @@ impl InferenceContext {
 	}
 
 	pub fn infer(&mut self, gamma: &Gamma, t: &ast::Expr) -> Result<ast::TypeExpr, String> {
-//		println!("   --: {:?}", t);
+		//println!("   --: {:?}", t);
 		match t {
 			ast::Expr::Var(name) => Ok(self.instantiate(gamma.lookup(name)?)),
 			ast::Expr::Number(_) => Err("No inference on numbers yet.".to_owned()),
@@ -371,6 +369,7 @@ impl InferenceContext {
 							let mut gamma_prime = gamma.clone();
 							let constructor_definition: &ast::Constructor =
 								constructor_list.get_constructor(&name_parts[1].to_owned())?;
+							// XXX: Do I need to assert that the same number of binders appear as in the inductive definition?
 							let pairs = clause.binders.binders.iter().zip(
 								constructor_definition.binders.binders.iter(),
 							);
@@ -443,7 +442,7 @@ pub fn update_via_inference(ctx: &mut InferenceContext, gamma: &mut Gamma, block
 		match declaration {
 			ast::Declaration::LetDeclaration(_, e) => {
 				// FIXME: Later I also need to include free variables in the type annotation.
-//				println!("FV: {:?}   -> {:?}", declaration, free_variables(e));
+				//println!("FV: {:?}   -> {:?}", declaration, free_variables(e));
 				for free_var in free_variables(e) {
 					dependencies.add_dependency(
 						declaration,
@@ -465,13 +464,13 @@ pub fn update_via_inference(ctx: &mut InferenceContext, gamma: &mut Gamma, block
 	}
 
 	let scc = dependencies.strongly_connected_components();
-//	println!("SCC: {:?}", scc);
+	//println!("SCC: {:?}", scc);
 
 	for component in &scc {
 		// Add type annotations that we can know about.
 		for declaration_tref in component {
 			let declaration = declaration_tref.contents;
-//			println!("PROCESSING: {:?}", declaration);
+			//println!("PROCESSING: {:?}", declaration);
 			match declaration {
 				ast::Declaration::LetDeclaration(binder, _) => {
 					gamma.insert(&binder.name, ctx.new_poly_type());
@@ -544,7 +543,7 @@ pub fn update_via_inference(ctx: &mut InferenceContext, gamma: &mut Gamma, block
 					// I have to call most_specific_type here or the contextual generalization fails to work appropriately.
 					let core_mono = ctx.unification_context.most_specific_type(&core_mono);
 					let gen = ctx.contextual_generalization(gamma, &core_mono);
-//					println!("CORE MONO: {:?} -> {:?} -> {:?}", binder.name, core_mono, gen);
+					//println!("CORE MONO: {:?} -> {:?} -> {:?}", binder.name, core_mono, gen);
 					gamma.remove(&binder.name);
 					gamma.insert(&binder.name, gen);
 				}

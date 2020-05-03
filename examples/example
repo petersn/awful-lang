@@ -17,6 +17,8 @@ pred_with_default := \x -> \y ->
 
 id := let _id := \x -> x in _id _id;
 
+loop := \x : nat<> -> loop x;
+
 infer nat;
 infer nat::O;
 infer nat::S;
@@ -24,4 +26,7 @@ infer plus;
 infer pred_with_default;
 infer id;
 infer id id;
+infer loop;
+
+main := \x -> x;
 
